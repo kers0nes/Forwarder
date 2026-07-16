@@ -1,11 +1,10 @@
 {
   "name": "discord-forward-bot",
   "version": "1.0.0",
-  "description": "Simple Discord forward bot",
+  "description": "Copy everything from one channel to another",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node --watch index.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
