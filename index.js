@@ -31,7 +31,7 @@ const client = new Client({
     ]
 });
 
-// Track forwarded messages to prevent duplicates
+// Track forwarded messages
 const forwardedMessageIds = new Set();
 
 // Save data
@@ -53,77 +53,113 @@ async function findChannelInAllServers(channelId) {
     }
 }
 
-// Forward a single message with all content
+// Forward a message with ALL content properly
 async function forwardMessage(message, targetChannel, sourceChannel) {
     try {
-        // Create embed with full content
-        const embed = new EmbedBuilder()
-            .setColor(0x0099FF)
-            .setAuthor({
-                name: message.author.tag,
-                iconURL: message.author.displayAvatarURL()
-            })
-            .setDescription(message.content || '*No text content*')
-            .addFields(
-                { name: '📌 Source', value: `<#${sourceChannel.id}>`, inline: true },
-                { name: '👤 Author', value: message.author.toString(), inline: true },
-                { name: '📅 Sent', value: `<t:${Math.floor(message.createdTimestamp / 1000)}:F>`, inline: true }
-            )
-            .setTimestamp(message.createdAt)
-            .setFooter({ text: `Original ID: ${message.id}` });
+        // Check if message has content or attachments
+        const hasContent = message.content && message.content.length > 0;
+        const hasAttachments = message.attachments.size > 0;
+        const hasEmbeds = message.embeds.length > 0;
 
-        // Add source server info
-        if (message.guild) {
-            embed.addFields({ 
-                name: '🏠 Server', 
-                value: message.guild.name,
-                inline: true 
-            });
+        if (!hasContent && !hasAttachments && !hasEmbeds) {
+            return { success: false, message: 'Empty message' };
         }
 
-        // Add reactions info if any
-        if (message.reactions.cache.size > 0) {
-            const reactions = message.reactions.cache.map(r => `${r.emoji} ${r.count}`).join(' ');
-            embed.addFields({ name: '💭 Reactions', value: reactions || 'None' });
-        }
-
-        // Process attachments
-        let files = [];
-        let otherAttachments = [];
+        // Prepare files
+        const files = [];
+        const attachmentLinks = [];
 
         for (const [, attachment] of message.attachments) {
-            if (attachment.contentType?.startsWith('image/') || 
-                attachment.contentType?.startsWith('video/') ||
-                attachment.contentType?.startsWith('audio/')) {
-                files.push({
-                    attachment: attachment.url,
-                    name: attachment.name
-                });
-            } else {
-                otherAttachments.push(`[${attachment.name}](${attachment.url})`);
-            }
-        }
-
-        if (otherAttachments.length > 0) {
-            const links = otherAttachments.join('\n');
-            embed.addFields({ 
-                name: `📎 Files`, 
-                value: links.length > 1024 ? links.substring(0, 1020) + '...' : links
+            files.push({
+                attachment: attachment.url,
+                name: attachment.name
             });
+            attachmentLinks.push(`📎 ${attachment.name}`);
         }
 
-        const messageData = { embeds: [embed] };
-        if (files.length > 0) {
-            messageData.files = files.slice(0, 10);
+        // If there are attachments, send them with context
+        if (hasAttachments) {
+            let content = '';
+            
+            // Add message content if exists
+            if (hasContent) {
+                content += `**${message.author.username}:** ${message.content}\n`;
+            }
+            
+            // Add attachment info
+            if (attachmentLinks.length > 0) {
+                content += `\n📁 **${attachmentLinks.length} file(s)**\n`;
+                content += attachmentLinks.join('\n');
+            }
+            
+            // Add source info
+            content += `\n\n📌 From: <#${sourceChannel.id}>`;
+            if (message.guild) {
+                content += `\n🏠 Server: ${message.guild.name}`;
+            }
+            content += `\n👤 Author: ${message.author.toString()}`;
+            content += `\n📅 Sent: <t:${Math.floor(message.createdTimestamp / 1000)}:F>`;
+
+            // Send with files
+            const messageData = {
+                content: content,
+                files: files.slice(0, 10)
+            };
+
+            await targetChannel.send(messageData);
+
+            // Send remaining files if more than 10
+            if (files.length > 10) {
+                for (let i = 10; i < files.length; i += 10) {
+                    await targetChannel.send({
+                        content: `📁 More files (${i + 1}-${Math.min(i + 10, files.length)}):`,
+                        files: files.slice(i, i + 10)
+                    });
+                }
+            }
+
+            return { success: true, files: files.length };
         }
 
-        await targetChannel.send(messageData);
-        
-        if (files.length > 10) {
-            await targetChannel.send(`⚠️ ${files.length - 10} more files not included (Discord limit)`);
+        // If no attachments but has content, send as embed
+        if (hasContent) {
+            const embed = new EmbedBuilder()
+                .setColor(0x0099FF)
+                .setAuthor({
+                    name: message.author.tag,
+                    iconURL: message.author.displayAvatarURL()
+                })
+                .setDescription(message.content)
+                .addFields(
+                    { name: '📌 Source', value: `<#${sourceChannel.id}>`, inline: true },
+                    { name: '👤 Author', value: message.author.toString(), inline: true },
+                    { name: '📅 Sent', value: `<t:${Math.floor(message.createdTimestamp / 1000)}:F>`, inline: true }
+                )
+                .setTimestamp(message.createdAt);
+
+            if (message.guild) {
+                embed.addFields({ 
+                    name: '🏠 Server', 
+                    value: message.guild.name,
+                    inline: true 
+                });
+            }
+
+            // Copy original embeds if any
+            if (message.embeds.length > 0) {
+                // Just send the original embed
+                await targetChannel.send({
+                    content: `📨 **Forwarded from <#${sourceChannel.id}>**`,
+                    embeds: message.embeds
+                });
+                return { success: true };
+            }
+
+            await targetChannel.send({ embeds: [embed] });
+            return { success: true };
         }
 
-        return { success: true };
+        return { success: false, message: 'No content to forward' };
 
     } catch (error) {
         console.error('Forward error:', error);
@@ -132,7 +168,7 @@ async function forwardMessage(message, targetChannel, sourceChannel) {
 }
 
 // Copy ALL messages from a channel
-async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
+async function copyAllMessages(sourceChannel, targetChannel) {
     try {
         let totalCopied = 0;
         let totalFailed = 0;
@@ -142,26 +178,25 @@ async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
         let batchCount = 0;
         let totalMessages = 0;
 
-        // Get initial count
+        // Check if we can access the channel
         try {
-            const initialFetch = await sourceChannel.messages.fetch({ limit: 1 });
-            if (initialFetch.size === 0) {
+            const testFetch = await sourceChannel.messages.fetch({ limit: 1 });
+            if (testFetch.size === 0) {
                 return { success: false, message: 'No messages found in source channel.' };
             }
         } catch (error) {
-            return { success: false, message: 'Cannot access source channel. Bot may not be in that server.' };
+            return { success: false, message: 'Cannot access source channel. Bot may not be in that server or lacks permissions.' };
         }
 
         // Send initial status
-        await statusChannel.send(`🔄 **Starting FULL COPY from <#${sourceChannel.id}>**`);
-        await statusChannel.send(`⏳ This will copy ALL messages. It may take a while...`);
+        await targetChannel.send(`🔄 **Starting FULL COPY from <#${sourceChannel.id}>**`);
+        await targetChannel.send(`⏳ This will copy ALL messages. It may take a while...`);
 
         // Keep fetching until no more messages
         while (hasMore) {
             batchCount++;
             let options = { limit: 100 };
             
-            // If we have a last message ID, fetch older messages
             if (lastMessageId) {
                 options.before = lastMessageId;
             }
@@ -177,19 +212,16 @@ async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
                 totalMessages += messages.size;
                 const sortedMessages = Array.from(messages.values()).reverse();
                 
-                // Send status update every 5 batches
+                // Status update every 5 batches
                 if (batchCount % 5 === 0) {
-                    await statusChannel.send(`⏳ Copied ${totalMessages} messages so far... Continuing...`);
+                    await targetChannel.send(`⏳ Progress: Copied ${totalMessages} messages so far...`);
                 }
 
-                // Process each message in this batch
+                // Process each message
                 for (const message of sortedMessages) {
                     lastMessageId = message.id;
-                    
-                    // Count files
                     totalFiles += message.attachments.size;
                     
-                    // Forward the message
                     const result = await forwardMessage(message, targetChannel, sourceChannel);
                     
                     if (result.success) {
@@ -199,15 +231,15 @@ async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
                     }
 
                     // Rate limit protection
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                    await new Promise(resolve => setTimeout(resolve, 200));
                 }
 
-                // Check if we got less than 100 messages (means we reached the end)
+                // Check if we reached the end
                 if (messages.size < 100) {
                     hasMore = false;
                 }
 
-                // Save progress every 10 batches
+                // Save progress
                 if (batchCount % 10 === 0) {
                     saveForwards();
                 }
@@ -219,7 +251,7 @@ async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
             }
         }
 
-        // Save continuous forward
+        // Save forward configuration
         const guildId = targetChannel.guildId;
         const targetId = targetChannel.id;
         
@@ -235,7 +267,7 @@ async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
             saveForwards();
         }
 
-        // Send completion message
+        // Send completion
         const completionEmbed = new EmbedBuilder()
             .setColor(0x00FF00)
             .setTitle('✅ FULL COPY COMPLETE!')
@@ -250,7 +282,7 @@ async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
             )
             .setTimestamp();
 
-        await statusChannel.send({ embeds: [completionEmbed] });
+        await targetChannel.send({ embeds: [completionEmbed] });
 
         return { 
             success: true, 
@@ -267,57 +299,29 @@ async function copyAllMessages(sourceChannel, targetChannel, statusChannel) {
     }
 }
 
-// Command to copy specific number of messages
-async function copyMessages(sourceChannel, targetChannel, limit = 100) {
-    try {
-        const messages = await sourceChannel.messages.fetch({ limit: Math.min(limit, 1000) });
-        
-        if (messages.size === 0) {
-            return { success: false, message: 'No messages found.' };
-        }
-
-        const sortedMessages = Array.from(messages.values()).reverse();
-        let copied = 0;
-        let failed = 0;
-        let files = 0;
-
-        for (const message of sortedMessages) {
-            files += message.attachments.size;
-            const result = await forwardMessage(message, targetChannel, sourceChannel);
-            if (result.success) {
-                copied++;
-            } else {
-                failed++;
-            }
-            await new Promise(resolve => setTimeout(resolve, 300));
-        }
-
-        return { success: true, copied, failed, total: sortedMessages.length, files };
-    } catch (error) {
-        return { success: false, message: error.message };
-    }
-}
-
 // Bot ready
 client.once('ready', () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     console.log(`🌐 Bot is in ${client.guilds.cache.size} servers`);
     console.log(`📝 Use ${PREFIX}forwardall <channel_id> to copy EVERYTHING`);
+    console.log(`👥 Anyone in the server can use this command!`);
 });
 
-// Handle commands
+// Handle commands - Available to EVERYONE in the server
 client.on('messageCreate', async message => {
-    if (message.author.bot || !message.guild) return;
+    // Only skip bots, allow all users
+    if (message.author.bot) return;
+    if (!message.guild) return;
     if (!message.content.startsWith(PREFIX)) return;
 
     const args = message.content.slice(PREFIX.length).trim().split(/ +/);
     const command = args.shift().toLowerCase();
 
-    // .forwardall - Copy ALL messages
+    // .forwardall - Copy ALL messages (anyone can use)
     if (command === 'forwardall') {
         const sourceInput = args[0];
         if (!sourceInput) {
-            return message.reply('❌ Please provide a source channel ID!\nUsage: `.forwardall <channel_id>`');
+            return message.reply('❌ Please provide a source channel ID!\nUsage: `.forwardall <channel_id>`\n\nGet the channel ID by right-clicking the channel and selecting "Copy ID" (Developer Mode must be enabled)');
         }
 
         const targetChannel = message.channel;
@@ -331,7 +335,7 @@ client.on('messageCreate', async message => {
             return message.reply('❌ Source and target channels cannot be the same!');
         }
 
-        // Check permissions
+        // Check bot permissions
         const botMember = message.guild.members.cache.get(client.user.id);
         if (!targetChannel.permissionsFor(botMember).has(['SendMessages', 'EmbedLinks', 'AttachFiles', 'ReadMessageHistory'])) {
             return message.reply('❌ I don\'t have permission to send messages/embeds/files in this channel.');
@@ -339,14 +343,14 @@ client.on('messageCreate', async message => {
 
         await message.reply(`🔄 **Starting FULL COPY** from <#${sourceChannel.id}>... This will copy EVERY message. It may take a while!`);
 
-        const result = await copyAllMessages(sourceChannel, targetChannel, targetChannel);
+        const result = await copyAllMessages(sourceChannel, targetChannel);
 
         if (!result.success) {
             return message.reply(`❌ Failed: ${result.message}`);
         }
     }
 
-    // .forward - Copy limited messages
+    // .forward - Copy limited messages (anyone can use)
     else if (command === 'forward') {
         const sourceInput = args[0];
         const limit = parseInt(args[1]) || 100;
@@ -366,18 +370,30 @@ client.on('messageCreate', async message => {
             return message.reply('❌ Source and target channels cannot be the same!');
         }
 
-        await message.reply(`🔄 Copying ${limit} messages from <#${sourceChannel.id}>...`);
+        await message.reply(`🔄 Copying up to ${limit} messages from <#${sourceChannel.id}>...`);
 
-        const result = await copyMessages(sourceChannel, targetChannel, limit);
+        // Copy limited messages
+        try {
+            const messages = await sourceChannel.messages.fetch({ limit: Math.min(limit, 1000) });
+            let copied = 0;
+            let failed = 0;
+            let files = 0;
 
-        if (!result.success) {
-            return message.reply(`❌ Failed: ${result.message}`);
+            for (const msg of messages.values()) {
+                files += msg.attachments.size;
+                const result = await forwardMessage(msg, targetChannel, sourceChannel);
+                if (result.success) copied++;
+                else failed++;
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+
+            await message.reply(`✅ Copied ${copied} messages with ${files} files from <#${sourceChannel.id}>`);
+        } catch (error) {
+            await message.reply(`❌ Failed: ${error.message}`);
         }
-
-        await message.reply(`✅ Copied ${result.copied} messages with ${result.files} files from <#${sourceChannel.id}>`);
     }
 
-    // .forwardstop
+    // .forwardstop - Stop forwarding (anyone can use)
     else if (command === 'forwardstop') {
         const targetChannelId = message.channel.id;
         const guildId = message.guild.id;
@@ -393,7 +409,7 @@ client.on('messageCreate', async message => {
         await message.reply(`🛑 Stopped ${count} forward(s) to this channel.`);
     }
 
-    // .forwardstatus
+    // .forwardstatus - Check status (anyone can use)
     else if (command === 'forwardstatus') {
         const guildId = message.guild.id;
 
@@ -412,13 +428,13 @@ client.on('messageCreate', async message => {
         await message.reply(status);
     }
 
-    // .servers
+    // .servers - See servers (anyone can use)
     else if (command === 'servers') {
         const serverList = client.guilds.cache.map(g => `• ${g.name} (${g.id})`).join('\n');
         await message.reply(`🌐 **Bot is in ${client.guilds.cache.size} servers:**\n\n${serverList}`);
     }
 
-    // .invite
+    // .invite - Get invite link (anyone can use)
     else if (command === 'invite') {
         const inviteLink = `https://discord.com/api/oauth2/authorize?client_id=${client.user.id}&permissions=274877990912&scope=bot`;
         await message.reply(`📨 **Invite me to another server:**\n${inviteLink}`);
