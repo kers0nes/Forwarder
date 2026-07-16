@@ -1,11 +1,10 @@
-const { Client, GatewayIntentBits, EmbedBuilder, REST, Routes } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
 
 // Configuration
 const TOKEN = process.env.TOKEN;
-const CLIENT_ID = process.env.CLIENT_ID;
 const PREFIX = process.env.PREFIX || '.';
 
 // Data storage
@@ -83,7 +82,7 @@ async function forwardMessage(message, targetChannel, sourceChannel) {
             .setTimestamp(message.createdAt)
             .setFooter({ text: `Original ID: ${message.id}` });
 
-        // Process all attachments
+        // Process attachments
         let files = [];
         let otherAttachments = [];
 
@@ -101,23 +100,22 @@ async function forwardMessage(message, targetChannel, sourceChannel) {
         }
 
         if (otherAttachments.length > 0) {
+            const links = otherAttachments.join('\n');
             embed.addFields({ 
                 name: `📎 Files`, 
-                value: otherAttachments.join('\n').substring(0, 1024)
+                value: links.length > 1024 ? links.substring(0, 1020) + '...' : links
             });
         }
 
-        // Send message with attachments
         const messageData = { embeds: [embed] };
         if (files.length > 0) {
-            messageData.files = files.slice(0, 10); // Discord max 10 files per message
+            messageData.files = files.slice(0, 10);
         }
 
         await targetChannel.send(messageData);
         
-        // If there are more than 10 files, send a follow-up
         if (files.length > 10) {
-            await targetChannel.send(`⚠️ ${files.length - 10} more files were not included due to Discord's 10 file limit. Check the source channel for all files.`);
+            await targetChannel.send(`⚠️ ${files.length - 10} more files were not included due to Discord's 10 file limit.`);
         }
 
         return { success: true };
@@ -129,9 +127,10 @@ async function forwardMessage(message, targetChannel, sourceChannel) {
 }
 
 // Copy entire channel
-async function copyChannel(sourceChannel, targetChannel, limit = 100) {
+async function copyChannel(sourceChannel, targetChannel) {
     try {
-        const messages = await sourceChannel.messages.fetch({ limit: Math.min(limit, 100) });
+        // Fetch up to 100 messages
+        const messages = await sourceChannel.messages.fetch({ limit: 100 });
         
         if (messages.size === 0) {
             return { success: false, message: 'No messages found in source channel.' };
@@ -142,7 +141,6 @@ async function copyChannel(sourceChannel, targetChannel, limit = 100) {
         let failed = 0;
         let totalAttachments = 0;
 
-        // Count total attachments
         for (const msg of sortedMessages) {
             totalAttachments += msg.attachments.size;
         }
@@ -224,54 +222,14 @@ async function copyChannel(sourceChannel, targetChannel, limit = 100) {
     }
 }
 
-// Command definitions for slash commands
-const commands = [
-    new SlashCommandBuilder()
-        .setName('forward')
-        .setDescription('Copy everything from source channel to this channel')
-        .addStringOption(option =>
-            option.setName('source')
-                .setDescription('Source channel ID or mention')
-                .setRequired(true))
-        .addIntegerOption(option =>
-            option.setName('limit')
-                .setDescription('Number of messages to copy (1-100)')
-                .setMinValue(1)
-                .setMaxValue(100)),
-    
-    new SlashCommandBuilder()
-        .setName('forwardstop')
-        .setDescription('Stop auto-forwarding to this channel'),
-    
-    new SlashCommandBuilder()
-        .setName('forwardstatus')
-        .setDescription('View active forwards in this server'),
-];
-
-// Register commands
-const rest = new REST({ version: '10' }).setToken(TOKEN);
-
-async function registerCommands() {
-    try {
-        console.log('🔄 Registering commands...');
-        await rest.put(
-            Routes.applicationCommands(CLIENT_ID),
-            { body: commands.map(cmd => cmd.toJSON()) }
-        );
-        console.log('✅ Commands registered!');
-    } catch (error) {
-        console.error('❌ Error:', error.message);
-    }
-}
-
 // Bot ready
-client.once('ready', async () => {
+client.once('ready', () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
-    console.log(`🌐 Ready for all servers!`);
-    await registerCommands();
+    console.log(`🌐 Bot is ready for all servers!`);
+    console.log(`📝 Use ${PREFIX}forward <channel_id> to copy messages`);
 });
 
-// Handle commands
+// Handle messages (prefix commands only)
 client.on('messageCreate', async message => {
     if (message.author.bot || !message.guild) return;
     if (!message.content.startsWith(PREFIX)) return;
@@ -290,7 +248,7 @@ client.on('messageCreate', async message => {
         const sourceChannel = await getChannel(sourceInput, message.guild);
 
         if (!sourceChannel) {
-            return message.reply('❌ Source channel not found. Please provide a valid channel ID or mention.');
+            return message.reply('❌ Source channel not found. Make sure:\n1. The ID is correct\n2. The bot is in that server\n3. The bot can see that channel');
         }
 
         if (sourceChannel.id === targetChannel.id) {
@@ -358,73 +316,6 @@ client.on('messageCreate', async message => {
         }
 
         await message.reply({ embeds: [embed] });
-    }
-});
-
-// Slash command handler
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-
-    const { commandName } = interaction;
-
-    if (commandName === 'forward') {
-        await interaction.deferReply();
-
-        const sourceInput = interaction.options.getString('source');
-        const limit = interaction.options.getInteger('limit') || 100;
-        const targetChannel = interaction.channel;
-        const sourceChannel = await getChannel(sourceInput, interaction.guild);
-
-        if (!sourceChannel) {
-            return interaction.editReply('❌ Source channel not found.');
-        }
-
-        if (sourceChannel.id === targetChannel.id) {
-            return interaction.editReply('❌ Source and target channels cannot be the same!');
-        }
-
-        const result = await copyChannel(sourceChannel, targetChannel, limit);
-        
-        if (!result.success) {
-            return interaction.editReply(`❌ Failed: ${result.message}`);
-        }
-    }
-
-    else if (commandName === 'forwardstop') {
-        const targetChannelId = interaction.channelId;
-        const guildId = interaction.guildId;
-
-        if (!forwards[guildId] || !forwards[guildId][targetChannelId]) {
-            return interaction.reply({ content: '❌ No forwards for this channel.', ephemeral: true });
-        }
-
-        delete forwards[guildId][targetChannelId];
-        saveForwards();
-        await interaction.reply('✅ Forwarding stopped for this channel.');
-    }
-
-    else if (commandName === 'forwardstatus') {
-        const guildId = interaction.guildId;
-
-        if (!forwards[guildId] || Object.keys(forwards[guildId]).length === 0) {
-            return interaction.reply({ content: '📭 No active forwards.', ephemeral: true });
-        }
-
-        const embed = new EmbedBuilder()
-            .setColor(0x0099FF)
-            .setTitle('📋 Active Forwards');
-
-        for (const [targetId, sourceIds] of Object.entries(forwards[guildId])) {
-            if (sourceIds.length > 0) {
-                embed.addFields({
-                    name: `📥 To: <#${targetId}>`,
-                    value: `📤 From: ${sourceIds.map(id => `<#${id}>`).join(', ')}`,
-                    inline: false
-                });
-            }
-        }
-
-        await interaction.reply({ embeds: [embed] });
     }
 });
 
